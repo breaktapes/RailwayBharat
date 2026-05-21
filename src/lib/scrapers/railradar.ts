@@ -5,7 +5,7 @@ const RAILRADAR_BASE = 'https://api.railradar.in/api/v1';
 // Key is hardcoded in railradar.in client JS — treat as best-effort, fallback on failure
 const RAILRADAR_KEY = 'rr_prod_3cf4ebe1abdf49338c02f37a11f135d6';
 
-const REQUEST_TIMEOUT_MS = 8000;
+const REQUEST_TIMEOUT_MS = 5000;
 
 const HEADERS = {
   'User-Agent':

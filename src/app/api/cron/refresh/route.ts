@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+export const maxDuration = 60; // seconds — requires Vercel Pro; on Hobby silently capped at 10s
 import { redis, keys, acquireCronLock, setActiveTrains, setTrainLive, indexTrainAtStation } from '@/lib/redis/client';
 import { supabase, trainRunsToday } from '@/lib/supabase/client';
 import { fetchAllLiveTrains } from '@/lib/scrapers/railradar';
