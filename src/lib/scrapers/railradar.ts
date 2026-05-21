@@ -66,7 +66,14 @@ export async function fetchAllLiveTrains(): Promise<LiveTrain[] | ScraperError> 
       }
     );
 
-    const entries = response.data;
+    const raw = response.data;
+    // API returns either a raw array or {success: true, data: [...]}
+    const entries: RailRadarLiveMapEntry[] = Array.isArray(raw)
+      ? raw
+      : Array.isArray((raw as { data?: unknown }).data)
+      ? (raw as { data: RailRadarLiveMapEntry[] }).data
+      : null!;
+
     if (!Array.isArray(entries)) {
       return { type: 'parse_error', message: 'live-map response is not an array' };
     }
