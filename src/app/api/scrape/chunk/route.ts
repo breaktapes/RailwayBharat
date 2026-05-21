@@ -46,8 +46,8 @@ export async function POST(request: NextRequest) {
 
   const coordMap = new Map<string, { lat: number; lng: number }>(
     (stations ?? [])
-      .filter((s: DbStation) => s.lat !== null && s.lng !== null)
-      .map((s: DbStation) => [s.station_code, { lat: s.lat!, lng: s.lng! }])
+      .filter((s) => s.lat !== null && s.lng !== null)
+      .map((s) => [s.station_code as string, { lat: s.lat as number, lng: s.lng as number }])
   );
 
   const primaryScraper = new NTESScraper(coordMap);

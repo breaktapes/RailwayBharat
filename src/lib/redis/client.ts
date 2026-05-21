@@ -58,7 +58,7 @@ export async function setActiveTrains(trainNumbers: string[]): Promise<void> {
   const pipeline = redis.pipeline();
   pipeline.del(keys.activeTrains);
   if (trainNumbers.length > 0) {
-    pipeline.sadd(keys.activeTrains, ...trainNumbers);
+    pipeline.sadd(keys.activeTrains, trainNumbers[0], ...trainNumbers.slice(1));
     pipeline.expire(keys.activeTrains, TTL.ACTIVE_TRAINS);
   }
   await pipeline.exec();
@@ -94,5 +94,5 @@ export async function getStationDepartures(
 ): Promise<string[]> {
   const now = Math.floor(Date.now() / 1000);
   const until = now + windowSeconds;
-  return redis.zrangebyscore(keys.stationIndex(stationCode), now, until);
+  return redis.zrange(keys.stationIndex(stationCode), now, until, { byScore: true }) as Promise<string[]>;
 }

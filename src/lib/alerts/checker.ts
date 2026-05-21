@@ -3,11 +3,17 @@ import { supabase } from '@/lib/supabase/client';
 import type { LiveTrain } from '@/types';
 import webpush from 'web-push';
 
-webpush.setVapidDetails(
-  'mailto:alerts@railwaybharat.in',
-  process.env.VAPID_PUBLIC_KEY!,
-  process.env.VAPID_PRIVATE_KEY!
-);
+let vapidConfigured = false;
+function ensureVapid() {
+  if (vapidConfigured) return;
+  if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) return;
+  webpush.setVapidDetails(
+    'mailto:alerts@railwaybharat.in',
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY
+  );
+  vapidConfigured = true;
+}
 
 interface AlertState {
   platform: string | null;
@@ -39,6 +45,7 @@ async function getSubscriptionsForTrain(trainNumber: string): Promise<AlertSubsc
 }
 
 async function sendPush(sub: AlertSubscription, payload: object): Promise<void> {
+  ensureVapid();
   try {
     await webpush.sendNotification(
       { endpoint: sub.push_endpoint, keys: sub.push_keys } as PushSubscription,
@@ -56,6 +63,7 @@ async function sendPush(sub: AlertSubscription, payload: object): Promise<void> 
 /** Compares new train states against cached states and fires push notifications on changes. */
 export async function checkAndFireAlerts(trains: LiveTrain[]): Promise<void> {
   if (!process.env.VAPID_PUBLIC_KEY || !process.env.VAPID_PRIVATE_KEY) return;
+  ensureVapid();
 
   const alertChecks = trains.map(async (train) => {
     const stateKey = `alert:state:${train.trainNumber}`;

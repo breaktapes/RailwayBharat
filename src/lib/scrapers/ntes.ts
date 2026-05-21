@@ -33,12 +33,12 @@ async function bootstrapSession(): Promise<string> {
     maxRedirects: 5,
   });
 
-  const setCookieHeader = response.headers['set-cookie'];
+  const setCookieHeader = response.headers['set-cookie'] as string | string[] | undefined;
   if (!setCookieHeader) throw new Error('NTES: no cookie returned from homepage');
 
   return Array.isArray(setCookieHeader)
     ? setCookieHeader.map((c) => c.split(';')[0]).join('; ')
-    : setCookieHeader.split(';')[0];
+    : (setCookieHeader as string).split(';')[0];
 }
 
 interface NtesRawStop {

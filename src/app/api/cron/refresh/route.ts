@@ -31,7 +31,7 @@ export async function GET(request: Request) {
   // ─────────────────────────────────────────────────────────────
   const liveMapResult = await fetchAllLiveTrains();
 
-  if (!isScraperError(liveMapResult)) {
+  if (Array.isArray(liveMapResult)) {
     const trains = liveMapResult;
     const trainNumbers = trains.map((t) => t.trainNumber);
 
@@ -70,7 +70,8 @@ export async function GET(request: Request) {
     return NextResponse.json({ source: 'railradar', trains: trains.length });
   }
 
-  console.warn(`[cron/refresh] RailRadar failed (${liveMapResult.type}), falling back to NTES`);
+  const failedResult = liveMapResult as import('@/types').ScraperError;
+  console.warn(`[cron/refresh] RailRadar failed (${failedResult.type}), falling back to NTES`);
 
   // ─────────────────────────────────────────────────────────────
   // FALLBACK PATH: QStash fan-out → NTES scraper chunks
