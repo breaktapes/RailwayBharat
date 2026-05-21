@@ -4,7 +4,7 @@
 
 ## Overview
 
-Build a public, open-source web application that tracks all Indian Railways trains in real time. Live positions on a map of India, delay status, station-by-station progress, and departure boards for any station. The differentiator: open source, beautifully designed, web-first, public developer API — unlike every existing commercial alternative (RailYatri, IndiaRailInfo, ixigo which are all proprietary or ugly).
+The Flighty for Indian Railways — a beautifully designed, open-source web app that tracks every Indian Railways train in real time. Not just a tracker: a personal travel companion with a lifetime journey passport, proactive alerts, and a public developer API. Positioned as the Wikipedia-grade open rail intelligence platform.
 
 Design doc: `~/.gstack/projects/RailwayBharat_DEV/akrish-unknown-design-20260521-125958.md` (APPROVED)
 
@@ -12,91 +12,180 @@ Design doc: `~/.gstack/projects/RailwayBharat_DEV/akrish-unknown-design-20260521
 
 - **Frontend**: Next.js 15 + TypeScript, App Router
 - **Styling**: Tailwind CSS + shadcn/ui
-- **Map (primary)**: deck.gl (ScatterplotLayer) + react-map-gl + Carto Dark / OpenStreetMap tiles — free, OSS, handles 1000+ animated markers at 60fps via WebGL
-- **Map (fallback)**: Leaflet + OpenStreetMap canvas rendering — for devices where WebGL fails (mid-range Android <Snapdragon 665)
+- **Map (primary)**: deck.gl (ScatterplotLayer + PathLayer for track overlay) + react-map-gl + Carto Dark tiles
+- **Map (fallback)**: Leaflet + OpenStreetMap canvas rendering — for devices where WebGL fails
+- **Map (track overlay)**: OpenRailwayMap tiles (`tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png`) — actual railway track geometry overlaid on dark base
 - **State/fetching**: React Query (polling every 120s)
 - **Cache**: Upstash Redis (position cache, TTL 120s)
-- **Queue/fan-out**: Upstash QStash ($10/mo plan — free tier insufficient, see Architecture)
-- **Database**: Supabase (PostgreSQL) — static master data (trains, stations, routes, `runs_on` schedule bitmask)
-- **Scraping**: Axios + Cheerio, NTES + RailYatri undocumented JSON endpoints
+- **Queue/fan-out**: Upstash QStash — fallback only (when RailRadar API fails; free tier sufficient for fallback path)
+- **Database**: Supabase (PostgreSQL) — static master data + journey passport (journeys table)
+- **Push notifications**: Web Push API (VAPID) — platform change alerts, delay threshold alerts
 - **Deployment**: Vercel + Vercel Cron (triggers every 2min)
 
 ## Data Sources
 
-- **NTES** (`enquiry.indianrail.gov.in`) — official Indian Railways enquiry; undocumented AJAX endpoints
-- **RailYatri** (`railyatri.in`) — popular third-party aggregator; undocumented REST API
-- Both scraped server-side (avoids CORS, enables caching and rate-limiting)
-- Fallback: if primary fails, try secondary. If both fail, serve stale Redis cache with `stale: true` flag
+### Primary: RailRadar API (discovered 2026-05-21)
+- **Endpoint**: `https://api.railradar.in/api/v1/trains/live-map?apiKey=rr_prod_3cf4ebe1abdf49338c02f37a11f135d6`
+- **What it gives**: Real `lat`/`lng` for every live train in India in a single GET — no interpolation needed
+- **Fields**: `train_number`, `train_name`, `current_lat`, `current_lng`, `current_station`, `next_station`, `mins_since_dep`, `curr_distance`
+- **Per-train detail**: `https://api.railradar.in/api/v1/trains/{id}?journeyDate=YYYY-MM-DD&dataType=live&apiKey=...`
+  - Full route with scheduled/actual arr/dep per station, delay minutes, platform
+- **Risk**: API key hardcoded in client JS — could be rotated. Treat as best-effort primary.
+
+### Fallback: NTES (Official)
+- `enquiry.indianrail.gov.in` — official AJAX endpoints
+- Session bootstrap required (GET homepage → cookie → POST status requests)
+- Rate-limited; use with exponential backoff
+
+### Fallback 2: RailYatri
+- `railyatri.in` — undocumented REST API
+- Used only if both RailRadar and NTES fail
+
+### Static Data: IndiaRailInfo (one-time seed)
+- Train listing index scrapeable (`/trains` — 50/page, no bot-block on index)
+- Unique data: rake/coach composition, historical platform assignments
+- Individual pages 503-blocked — index only
+
+### Map Infrastructure
+- **Carto Dark**: Base map tiles (dark theme)
+- **OpenRailwayMap**: `tiles.openrailwaymap.org/standard/{z}/{x}/{y}.png` — railway track overlay (CC-BY-SA 2.0)
+- Attribution: OpenStreetMap contributors + OpenRailwayMap
+
+### Data Source Priority
+```
+1. RailRadar live-map  → lat/lng for all trains in 1 call (preferred)
+2. RailRadar per-train → full route + delay data
+3. NTES               → fallback scraper (rate-limited)
+4. RailYatri          → fallback scraper (if NTES fails)
+5. Stale Redis cache  → last resort (stale:true flag)
+```
 
 ## Key Features
 
 ### 1. Homepage — Live Map
-- deck.gl ScatterplotLayer on dark Carto tile base
-- ~500 running trains as animated dots (4px→7px pulse, 2s keyframe, requestAnimationFrame loop)
+- deck.gl on dark Carto base + OpenRailwayMap track overlay (toggle)
+- ~500 running trains as animated dots (4px→7px pulse, 2s keyframe)
 - Color-coded: green = on time, yellow = <30min late, red = >30min late
-- Click dot → train popover: name, number, current station, delay, next 3 stops
+- Click dot → train popover: name, number, current station, delay, next 3 stops, "Track this train" CTA
 - Floating search bar, live train count badge, refresh timestamp
 - Polls `/api/trains/live` every 120s
 
-### 2. Train Search
-- Search by train number or name (fuzzy match on Supabase master data)
-- Autocomplete dropdown → links to train detail page
+### 2. Train Detail Page (`/train/[trainNumber]`)  ★ Flighty-grade
+- **Header**: Train name + number, origin → destination, current status badge
+- **Live position card**: Current station + platform (PF 3), next station, ETA, delay badge
+- **Inbound train**: Where this rake is coming from (previous journey) — "Arriving as 12302 from Mumbai"
+- **Progress bar**: Stations passed / total with animated train icon on the bar
+- **Full route timeline**: Each station row — code | name | scheduled ARR/DEP | actual | delay | platform | status
+  - Passed stations: dimmed; current: highlighted accent; upcoming: full brightness
+- **Coach map**: Which coach (SL, 3A, 2A, 1A) is at which end of the platform
+- Polls every 120s; subtle spinner on last-updated timestamp
 
-### 3. Train Detail Page (`/train/[trainNumber]`)
-- Progress bar (stations passed / total)
-- Full station table: name | scheduled | actual | delay | status
-- Current station highlighted
-- Polls `/api/train/[id]` every 120s
+### 3. Station Board (`/station/[stationCode]`)
+- **Departures tab**: Next 3 hours, sortable by time / delay
+- **Arrivals tab**: Next 3 hours
+- Each row: train number + name | PF | scheduled | actual | delay badge | status
+- Tap row → train detail page
+- Real-time: polls every 120s
 
-### 4. Station Board (`/station/[stationCode]`)
-- Departures and arrivals for next 3 hours
-- Aggregated from Redis `station:index:{stationCode}` sorted set
-- Polls every 120s
+### 4. Journey Passport  ★ New (Flighty signature feature)
+- **Logbook**: Every trip the user records (manual "I'm on this train" or auto-import)
+- **Stats**: Total km traveled, unique stations visited, trains ridden, longest journey, most delayed train, zones traveled
+- **Per-journey card**: Train name, date, from → to, duration, delay (or "On time"), route map thumbnail
+- **Import**: Paste IRCTC booking confirmation text → auto-parses PNR, train number, date, coach
+- **Storage**: localStorage for quick access + optional Supabase sync (no auth required — anonymous UUID per device)
+- Route: `/passport`
 
-### 5. Saved Trains/Stations
-- localStorage-backed (no server, no auth)
-- ★ tap on any train/station → saved to `localStorage['rb:favorites']`
-- Saved tab shows list, taps through to detail pages
+### 5. Proactive Alerts  ★ New (Flighty core differentiator)
+- **Platform change alert**: Train switches platform → push notification + in-app banner
+- **Delay threshold alert**: Train crosses 30min / 60min delay → push notification
+- **Departure imminent**: 15min before scheduled departure at watched station
+- **Implementation**: Web Push API (VAPID keys), service worker, Supabase `alert_subscriptions` table
+- User subscribes per-train or per-station; stored with push endpoint
+- Server checks: Vercel cron compares new scrape vs cached data → if platform changed or delay jumped → QStash → push to all subscribed endpoints
 
-### 6. Embeddable Widget
-- `<iframe src="https://railwaybharat.in/embed/train/[trainId]" />` 
-- Returns self-contained HTML: train name, current station, delay badge, next 2 stops
-- CORS-open, CDN-cached 60s (`Cache-Control: public, max-age=60, s-maxage=60`)
+### 6. Search + Trains Between Stations
+- Train search: fuzzy match by number or name
+- **Trains between stations**: Enter origin + destination → list of trains, journey time, days of operation
+- Powered by Supabase `train_schedule` join query + RailRadar `/trains/between` endpoint
+- Route: `/between?from=NDLS&to=MMCT`
+
+### 7. Saved Trains/Stations
+- ★ on any train/station → `localStorage['rb:favorites']`
+- Saved tab: quick-access list with live status badges
+- Long-press → remove
+
+### 8. Embeddable Widget
+- `<iframe src="https://railwaybharat.in/embed/train/[trainId]" />`
+- Self-contained HTML: train name, current station, delay badge, next 2 stops
+- CORS-open, CDN-cached 60s
 - Rate-limited: 100 req/min per IP via Vercel Edge Middleware
 
 ## Architecture
 
 ```
 [Client Browser]
-    ├── deck.gl ScatterplotLayer (animated train dots, pulsing)
+    ├── deck.gl ScatterplotLayer + PathLayer (train dots + track overlay)
     │   └── Leaflet fallback if WebGL unavailable
-    ├── react-map-gl + Carto Dark tiles
-    └── React Query (polls every 120s)
+    ├── react-map-gl + Carto Dark + OpenRailwayMap tile overlay
+    ├── React Query (polls every 120s)
+    └── Service Worker (Web Push, background sync)
               │
 [Next.js API Routes on Vercel]
-    ├── /api/trains/live      → {trains: LiveTrain[], lastUpdated, stale: bool, count}
-    ├── /api/train/[id]       → LiveTrainDetail | 503 {retryAfter: 30}
-    ├── /api/station/[code]   → StationBoard (from Redis sorted set)
-    ├── /api/embed/[trainId]  → iframe HTML (CORS-open, CDN-cached 60s)
-    └── /api/cron/refresh     → writes batch to Redis, triggers QStash chunks
+    ├── /api/trains/live         → {trains: LiveTrain[], lastUpdated, stale, count}
+    ├── /api/train/[id]          → LiveTrainDetail | 503 {retryAfter: 30}
+    ├── /api/station/[code]      → StationBoard
+    ├── /api/between             → TrainsBetweenStations
+    ├── /api/embed/[trainId]     → iframe HTML (CORS-open, CDN-cached 60s)
+    ├── /api/passport/import     → parse IRCTC booking text → Journey record
+    ├── /api/alerts/subscribe    → register Web Push endpoint
+    └── /api/cron/refresh        → primary: RailRadar bulk fetch → Redis
+              │                    fallback: QStash fan-out → NTES chunks
               │
-              ├── QStash fan-out → 10× /api/scrape/chunk?batch={id}&chunk={n}
-              │     Each chunk: 50 trains, ~8s per invocation (within Vercel 10s limit)
+              ├── HAPPY PATH (RailRadar available):
+              │   Single GET api.railradar.in/live-map → all 500+ trains w/ lat/lng
+              │   → write train:live:{n} to Redis (pipeline, <2s total)
+              │   → check platform/delay changes → fire Web Push if needed
+              │
+              ├── FALLBACK PATH (RailRadar fails):
+              │   QStash fan-out → 10× /api/scrape/chunk (NTES, 50 trains each)
               │
               ├── Upstash Redis (TTL 120s)
-              │     train:live:{number}         → LiveTrain JSON
-              │     station:index:{stationCode}  → sorted set (score = dep time unix)
+              │     cron:lock                           → concurrency guard (TTL 110s)
+              │     cron:active-trains                  → Set of train numbers (TTL 240s)
+              │     cron:source                         → "railradar"|"ntes" (last used)
+              │     train:live:{number}                 → LiveTrain JSON (TTL 120s)
+              │     station:index:{stationCode}         → sorted set (score = dep unix)
+              │     alert:state:{trainNumber}           → {platform, delay} for change detection
               │
-              └── ScraperTransport interface
-                    NTESScraper (primary)
-                    RailYatriScraper (fallback)
-                    ProxiedTransport (wrapper if IP blocking >20%)
+              └── Data Sources
+                    RailRadar API (primary — lat/lng bulk, per-train detail)
+                    NTESScraper (fallback — session bootstrap, per-train)
+                    RailYatriScraper (fallback 2)
 
 [Supabase]
     trains(id, train_number, train_name, from_station, to_station, runs_on bitmask)
     stations(id, station_code, station_name, lat, lng, zone)
-    train_schedule(id, train_id, station_id, seq, arr_time, dep_time, distance_km)
+    train_schedule(id, train_id, station_id, seq, arr_time, dep_time, distance_km, platform)
+    journeys(id, device_id, train_number, journey_date, from_station, to_station,
+             coach, pnr, delay_minutes, created_at)          ← Journey Passport
+    alert_subscriptions(id, device_id, type, target_id, push_endpoint,
+                        push_keys, created_at)               ← Web Push
 ```
+
+### Cron Refresh Strategy (Happy Path vs Fallback)
+
+```
+Every 2 minutes:
+  1. Acquire cron:lock (TTL 110s) — skip if locked
+  2. GET api.railradar.in/api/v1/trains/live-map
+     ├── Success → pipeline write 500+ train:live:{n} to Redis
+     │             write cron:source = "railradar"
+     │             check alert:state for platform/delay changes → push notifications
+     └── Failure → write cron:source = "ntes"
+                   fall back to QStash fan-out (10 chunks, NTES/RailYatri scrapers)
+```
+
+**Why this eliminates QStash for the happy path:** RailRadar's bulk endpoint returns all live trains with lat/lng in a single HTTP call — no fan-out needed. QStash is only provisioned as the NTES fallback, keeping it on the free tier (500 msg/day × occasional fallback runs).
 
 ### CORS Policy
 `/api/trains/live`, `/api/train/[id]`, `/api/station/[code]`, `/api/embed/[trainId]`: all expose `Access-Control-Allow-Origin: *` (read-only public data, no auth).
@@ -146,41 +235,47 @@ interface ScraperTransport {
 
 ## Out of Scope (v1)
 
-- ML delay prediction (needs months of historical data first)
-- User accounts / cloud-synced saved trains
-- Native iOS/Android app
-- Community layer (crowdsourced train reports)
-- Historical route playback
-- Push notifications
-- Booking / PNR status integration
+- ML delay prediction (needs historical data — build after 3 months of data collection)
+- Native iOS/Android app (web-first, then PWA install)
+- Community layer (crowdsourced reports) — Phase 2
+- Historical route playback — Phase 2
+- Booking / ticket purchase — never (legal complexity)
+- Full PNR status check (IRCTC scraping — legally risky; only parse booking text user provides)
 
 ## Implementation Phases
 
-### Phase 1 — Foundation + Data Validation
-- `git init`, create Next.js 15 project
-- Set up Supabase schema + seed static data from data.gov.in
-- Build NTESScraper + RailYatriScraper (ScraperTransport interface)
-- **Run scraper 72 hours — validate block rate <5% before proceeding**
-- Set up Upstash Redis + QStash, build cron fan-out
+### Phase 1 — Foundation ✅ DONE (2026-05-21)
+- Next.js 15 scaffold, core types, API routes
+- ScraperTransport interface, NTESScraper, RailYatriScraper
+- Redis client (cron lock, active-trains index, station sorted sets)
+- Supabase schema migration
+- 13 unit tests passing
 
-### Phase 2 — Core APIs
-- `/api/trains/live`, `/api/train/[id]`, `/api/station/[code]`
-- Cron fan-out + chunked scraping pipeline
-- Graceful degradation (stale flag, amber banner)
+### Phase 2 — RailRadar Integration + Cron (CURRENT)
+- Wire RailRadar bulk fetch into `/api/cron/refresh` (replace NTES-primary path)
+- Add `RailRadarScraper` implementing ScraperTransport
+- Seed Supabase with static train/station data
+- Test: RailRadar → Redis → `/api/trains/live` pipeline end-to-end
+- Validate: data freshness, lat/lng accuracy vs known train positions
 
-### Phase 3 — Frontend
-- deck.gl map with train dots + animation
+### Phase 3 — Frontend: Map + Train Detail
+- deck.gl map with train dots + OpenRailwayMap track overlay
 - Leaflet fallback (WebGL detection)
-- Search component + autocomplete
-- Train detail page
-- Station board
+- Train detail page (Flighty-grade): inbound train, full route timeline, coach map
+- Station board with departures + arrivals tabs
+- Search + trains-between-stations
 
-### Phase 4 — Polish + Distribution
-- Saved tab (localStorage favorites)
+### Phase 4 — Flighty Features
+- Journey Passport (`/passport`): logbook, stats, IRCTC import parser
+- Proactive alerts: Web Push (VAPID), service worker, platform change + delay threshold
+- Saved tab with live status badges
 - Embeddable iframe widget
-- Mobile responsive QA (Android 10 target device)
+
+### Phase 5 — Polish + Distribution
+- Mobile responsive QA (Android 10 Snapdragon 665)
+- PWA manifest + install prompt
 - README + architecture diagram
-- Deploy, post on r/india, r/IndianRailways, HN
+- Deploy, post r/india / r/IndianRailways / HN
 
 ## Infrastructure Costs
 
@@ -189,9 +284,12 @@ interface ScraperTransport {
 | Vercel | Free (Hobby) | $0 |
 | Supabase | Free | $0 |
 | Upstash Redis | Free (10k cmd/day) | $0 |
-| Upstash QStash | Pay-as-you-go | ~$10/mo |
-| Mapbox/Carto tiles | Free (OSM tiles) | $0 |
-| **Total** | | **~$10/mo** |
+| Upstash QStash | Free (fallback only — ~50 msg/day) | $0 |
+| Carto/OSM tiles | Free | $0 |
+| OpenRailwayMap tiles | Free (CC-BY-SA, attribution required) | $0 |
+| **Total** | | **$0/mo** (QStash free tier sufficient for fallback-only use) |
+
+Note: RailRadar bulk API eliminates the QStash fan-out for the happy path, saving ~$10/mo vs original plan.
 
 ## Design Spec (added by Phase 2 Design Review)
 
